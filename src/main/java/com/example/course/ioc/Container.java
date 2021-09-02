@@ -7,6 +7,10 @@ import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
 
 /**
  *  Dependency injection => IOC (IOC container)
@@ -17,7 +21,7 @@ import java.util.Map;
 public class Container {
     private final Map<String, Object> objectFactory = new HashMap<>();
 
-    public static void start() throws Exception{
+    public static void start() throws Exception {
         Container c = new Container();
         List<Class<?>> classes = c.scan();
         c.register(classes);
@@ -29,10 +33,10 @@ public class Container {
     }
 
     private boolean register(List<Class<?>> classes) throws Exception {
-        for(Class<?> clazz: classes) {
+        for (Class<?> clazz : classes) {
             Annotation[] annotations = clazz.getAnnotations();
-            for(Annotation a: annotations) {
-                if(a.annotationType() == Component.class) {
+            for (Annotation a : annotations) {
+                if (a.annotationType() == Component.class) {
                     objectFactory.put(clazz.getSimpleName(), clazz.getDeclaredConstructor(null).newInstance());
                 }
             }
@@ -40,75 +44,68 @@ public class Container {
         return true;
     }
 
-    private boolean injectObjects(List<Class<?>> classes) throws Exception{
-        for(Class<?> clazz: classes) {
+    private boolean injectObjects(List<Class<?>> classes) throws Exception {
+        for (Class<?> clazz : classes) {
             Field[] fields = clazz.getDeclaredFields();
             Object curInstance = objectFactory.get(clazz.getSimpleName());
-            for(Field f: fields) {
-                Annotation[] annotations = f.getAnnotations();
-                for(Annotation a: annotations) {
-                    if(a.annotationType() == Autowired.class) {
-                        Class<?> type = f.getType();
-                        Object injectInstance = objectFactory.get(type.getSimpleName());
-                        f.setAccessible(true);
-                        f.set(curInstance, injectInstance);
-                    }
-                }
+
+            // filter all fields that are annotated with @Autowired
+            List<Field> autowiredFields = Arrays.stream(fields)
+                .filter(f -> {
+                    Annotation[] annotations = f.getAnnotations();
+                    return Arrays.stream(annotations)
+                        .anyMatch(annotation -> annotation.annotationType() == Autowired.class);
+                })
+                .collect(Collectors.toList());
+
+            List<Field> kualifierFields = autowiredFields.stream()
+                .filter(f -> {
+                    Annotation[] annotations = f.getAnnotations();
+                    return Arrays.stream(annotations)
+                        .anyMatch(annotation -> annotation.annotationType() == Kualifier.class);
+                })
+                .collect(Collectors.toList());
+
+            // After this removal, autowiredFields only contains fields with @Autowired annotated
+            autowiredFields.removeAll(kualifierFields);
+
+            // Inject all Autowired only fields
+            for (Field f: autowiredFields)
+                injectInstance(curInstance, f);
+
+            // Inject all Beans with both @Autowired and @Kualifier
+            for (Field f: kualifierFields) {
+                injectInstance(curInstance, f, classes);
             }
         }
         return true;
     }
-}
 
+    /**
+     * Inject the autowired only instance to the targeting field of the targeting object.
+     */
+    private void injectInstance(Object curInstance, Field f) throws IllegalAccessException {
+        Class<?> type = f.getType();
+        Object injectInstance = objectFactory.get(type.getSimpleName());
+        f.setAccessible(true);
+        f.set(curInstance, injectInstance);
+    }
 
-@Component
-class StudentRegisterService {
-    @Override
-    public String toString() {
-        return "this is student register service instance : " + super.toString() + "\n";
+    /**
+     * Inject instance for the field with @Kualifier annotated to the targeting object.
+     */
+    private void injectInstance(Object curInstance, Field f, List<Class<?>> injectedClasses) throws IllegalAccessException {
+        Optional<Class<?>> targetClassOption = injectedClasses.stream()
+            .filter(clazz -> Optional.ofNullable(clazz.getAnnotation(Kualifier.class))
+                .map(kualifierAnnotation -> kualifierAnnotation.equals(f.getAnnotation(Kualifier.class)))
+                .orElse(false)
+            )
+            .findFirst();
+
+        if (targetClassOption.isPresent()) {
+            Object injectInstance = objectFactory.get(targetClassOption.get().getSimpleName());
+            f.setAccessible(true);
+            f.set(curInstance, injectInstance);
+        }
     }
 }
-
-@Component
-class StudentApplication {
-    @Autowired
-    StudentRegisterService studentRegisterService;
-
-    @Override
-    public String toString() {
-        return "StudentApplication{\n" +
-                "studentRegisterService=" + studentRegisterService +
-                "}\n";
-    }
-}
-
-@Component
-class Starter {
-    @Autowired
-    private static StudentApplication studentApplication;
-    @Autowired
-    private static StudentRegisterService studentRegisterService;
-
-    public static void main(String[] args) throws Exception{
-        Container.start();
-        System.out.println(studentApplication);
-        System.out.println(studentRegisterService);
-    }
-}
-/**
- *  1. add interface
- *  2. all components need to impl interface
- *  3. @Autowired -> inject by type
- *                   if we have multiple implementations of current type => throw exception
- *  4. @Autowired + @Qualifier("name") -> inject by bean name
- *  5. provide constructor injection
- *      @Autowired
- *      public xx(.. ,..) {
- *          .. = ..
- *          .. = ..
- *      }
- *  6. provide setter injection
- *  7. provide different injection scope / bean scope
- *          1. now we only supporting singleton
- *          2. prototype -> @Autowired => you inject a new instance
- */
